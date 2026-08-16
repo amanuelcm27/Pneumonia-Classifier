@@ -1,0 +1,130 @@
+{
+  "experiment": "PneumoNet - Fully Connected Baseline Exploration",
+  "objective": "Establish performance ceiling of a fully-connected (FCL) architecture on chest X-ray pneumonia classification before moving to a CNN.",
+  "dataset": {
+    "train_size": 5232,
+    "test_size": 624,
+    "class_counts_train": {"NORMAL": 1349, "PNEUMONIA": 3883},
+    "class_counts_test": {"NORMAL": 234, "PNEUMONIA": 390},
+    "class_imbalance_ratio": "2.88:1 (PNEUMONIA:NORMAL)",
+    "image_size": "224x224",
+    "channels": 1,
+    "source_note": "Original images had mixed aspect ratios (0.835-3.379) and mixed channel counts (1 and 3) before preprocessing; resolved via forced grayscale decode and plain resize to 224x224."
+  },
+  "architecture_base": {
+    "type": "Fully Connected (FCL)",
+    "layers_v1_v2": ["Flatten", "Linear(224*224,256)", "ReLU", "Linear(256,32)", "ReLU", "Linear(32,1)"],
+    "layers_v3_v4": ["Flatten", "Linear(224*224,256)", "ReLU", "Dropout(0.3)", "Linear(256,32)", "ReLU", "Dropout(0.3)", "Linear(32,1)"],
+    "approx_params": 12850000,
+    "params_per_training_image": "~2456"
+  },
+  "runs": [
+    {
+      "run_id": "v1_unweighted_bce",
+      "changes": "Baseline. Unweighted BCEWithLogitsLoss, plain SGD, no regularization, no checkpointing.",
+      "hyperparams": {"lr": null, "batch_size": null, "epochs": 10, "optimizer": "SGD", "momentum": 0, "weight_decay": 0, "dropout": 0, "scheduler": "none"},
+      "evaluated_from": "final epoch (no checkpointing implemented yet)",
+      "best_epoch_observed": {"epoch": 3, "accuracy": null, "avg_test_loss": 0.340588},
+      "results": {
+        "accuracy": 0.793,
+        "avg_test_loss": 0.7735,
+        "confusion_matrix": {"TN": 122, "FP": 112, "FN": 17, "TP": 373},
+        "normal": {"precision": 0.88, "recall": 0.52, "f1": 0.65},
+        "pneumonia": {"precision": 0.77, "recall": 0.96, "f1": 0.85},
+        "macro_avg": {"precision": 0.82, "recall": 0.74, "f1": 0.75},
+        "weighted_avg": {"precision": 0.81, "recall": 0.79, "f1": 0.78}
+      },
+      "notes": "Test loss noisy/non-monotonic across epochs (range 0.26-1.07). Strong PNEUMONIA recall, weak NORMAL recall - consistent with class imbalance. Overfitting signature present (train loss consistently <0.15-0.25 vs erratic test loss)."
+    },
+    {
+      "run_id": "v2_weighted_bce",
+      "changes": "Added pos_weight=1349/3883 to BCEWithLogitsLoss to correct class imbalance. No regularization, no checkpointing.",
+      "hyperparams": {"lr": null, "batch_size": null, "epochs": 10, "optimizer": "SGD", "momentum": 0, "weight_decay": 0, "dropout": 0, "scheduler": "none", "pos_weight": 0.347},
+      "evaluated_from": "final epoch (no checkpointing implemented yet)",
+      "results": {
+        "accuracy": 0.81,
+        "avg_test_loss": 0.4563,
+        "confusion_matrix": {"TN": 141, "FP": 93, "FN": 28, "TP": 362},
+        "normal": {"precision": 0.83, "recall": 0.60, "f1": 0.70},
+        "pneumonia": {"precision": 0.80, "recall": 0.93, "f1": 0.86},
+        "macro_avg": {"precision": 0.81, "recall": 0.77, "f1": 0.78},
+        "weighted_avg": {"precision": 0.81, "recall": 0.81, "f1": 0.80}
+      },
+      "notes": "Rebalanced errors vs v1: NORMAL recall improved (+0.08), PNEUMONIA recall dropped slightly (-0.03), fewer false alarms (FP 112->93) at the cost of more missed pneumonia cases (FN 17->28). Macro F1 improved to 0.78."
+    },
+    {
+      "run_id": "v3_dropout_momentum_weightdecay",
+      "changes": "Added Dropout(0.3) after each hidden ReLU, SGD momentum=0.9, weight_decay=1e-4. Kept pos_weight from v2. Checkpointing NOT yet implemented in this run.",
+      "hyperparams": {"lr": 1e-2, "batch_size": 24, "epochs": 10, "optimizer": "SGD", "momentum": 0.9, "weight_decay": 1e-4, "dropout": 0.3, "scheduler": "none", "pos_weight": 0.347},
+      "evaluated_from": "final epoch (NOT best epoch - known issue)",
+      "best_epoch_observed": {"epoch": 2, "accuracy": 0.822, "avg_test_loss": 0.2302},
+      "results": {
+        "accuracy": 0.77,
+        "avg_test_loss": 0.385,
+        "confusion_matrix": {"TN": 98, "FP": 136, "FN": 7, "TP": 383},
+        "normal": {"precision": 0.93, "recall": 0.42, "f1": 0.58},
+        "pneumonia": {"precision": 0.74, "recall": 0.98, "f1": 0.84},
+        "macro_avg": {"precision": 0.84, "recall": 0.70, "f1": 0.71},
+        "weighted_avg": {"precision": 0.81, "recall": 0.77, "f1": 0.74}
+      },
+      "notes": "NOT DIRECTLY COMPARABLE to other runs - evaluated from epoch 10 (degraded) rather than the run's actual best point (epoch 2: 82.2% accuracy, 0.230 test loss). Test loss rose almost monotonically from epoch 2 onward (0.23 -> 0.39), suggesting lr=1e-2 combined with momentum=0.9 may have been too aggressive, causing instability rather than smooth convergence.",
+      "caveats": ["UNRESOLVED: never re-evaluated from a reloaded best checkpoint. True best-epoch performance for this configuration is unknown; only the degraded epoch-10 result was measured."]
+    },
+    {
+      "run_id": "v4_adam_scheduler_bestcheckpoint",
+      "changes": "Switched optimizer to Adam, added StepLR scheduler (step_size=3, gamma=0.5), weight_decay=1e-5, implemented checkpoint saving (best test loss). Kept Dropout(0.3) and pos_weight from v2/v3.",
+      "hyperparams": {"lr_initial": 1e-3, "batch_size": 24, "epochs": 10, "optimizer": "Adam", "weight_decay": 1e-5, "scheduler": "StepLR(step_size=3, gamma=0.5)", "dropout": 0.3, "pos_weight": 0.347},
+      "evaluated_from": "reloaded best checkpoint (epoch 3)",
+      "failed_attempt_note": "Initial attempt at lr=1e-2 caused total model collapse (dead ReLUs): flat non-decreasing loss (~0.28-0.45) across all 10 epochs, model predicted NORMAL for 100% of test samples ([[234,0],[390,0]]). Root cause: 1e-2 is ~10x too high for Adam (standard range ~1e-3), causing large early updates that likely drove most ReLU units into permanent zero-output territory. Fixed by lowering lr to 1e-3.",
+      "results": {
+        "accuracy": 0.84,
+        "avg_test_loss": 0.1992,
+        "confusion_matrix": {"TN": 205, "FP": 29, "FN": 71, "TP": 319},
+        "normal": {"precision": 0.74, "recall": 0.88, "f1": 0.80},
+        "pneumonia": {"precision": 0.92, "recall": 0.82, "f1": 0.86},
+        "macro_avg": {"precision": 0.83, "recall": 0.85, "f1": 0.83},
+        "weighted_avg": {"precision": 0.85, "recall": 0.84, "f1": 0.84}
+      },
+      "notes": "BEST result across all runs by accuracy, test loss, and macro F1. Recall balance shifted notably toward NORMAL (0.88) relative to all prior runs, at the cost of the WORST false-negative count observed (71 missed pneumonia cases vs 17-28 in v1/v2). Test loss still degrades sharply after epoch 3 (0.199 -> 0.78 by epoch 7) - overfitting pattern persists even with adaptive optimizer + scheduler + dropout + weight decay + checkpointing."
+    }
+  ],
+  "cross_run_comparison": {
+    "best_accuracy": {"run": "v4", "value": 0.84},
+    "best_macro_f1": {"run": "v4", "value": 0.83},
+    "best_pneumonia_recall": {"run": "v3 (uncorrected epoch-10 result)", "value": 0.98},
+    "best_normal_recall": {"run": "v4", "value": 0.88},
+    "fewest_false_negatives": {"run": "v1", "value": 17, "interpretation": "fewest missed real pneumonia cases"},
+    "fewest_false_positives": {"run": "v4", "value": 29, "interpretation": "fewest false alarms on healthy patients"},
+    "key_tradeoff": "Across runs, improving overall accuracy/balance (v2 -> v4) consistently traded away pneumonia recall (fewer missed cases caught) in exchange for fewer false alarms. No run achieved both simultaneously. Whether v1 (high recall, more false alarms) or v4 (balanced, more missed cases) is 'better' depends on the relative cost of false negatives vs false positives for the intended use case - not resolved by these experiments alone."
+  },
+  "overfitting_analysis": {
+    "conclusion": "Overfitting was NOT resolved by any of the four configurations tested.",
+    "evidence": "In every run, test loss reached its minimum within the first 2-4 epochs (v1: epoch 3 / 0.34; v2: ~epoch 4 / ~0.26; v3: epoch 2 / 0.230; v4: epoch 3 / 0.199) and then degraded for the remainder of training, while training loss continued decreasing toward near-zero in every run regardless of configuration.",
+    "levers_tried_without_resolving_the_pattern": [
+      "Class-weighted loss (pos_weight)",
+      "Dropout (0.3)",
+      "Weight decay (1e-4, 1e-5)",
+      "SGD momentum (0.9)",
+      "Optimizer change (SGD -> Adam)",
+      "Learning rate scheduling (StepLR)",
+      "Best-checkpoint saving (mitigates impact but does not resolve underlying cause)"
+    ],
+    "not_yet_tried": ["Data augmentation"],
+    "interpretation": "The consistent, repeated early-peak-then-degrade shape across every configuration - independent of loss weighting, regularization, or optimizer - is evidence of a structural capacity/data-size mismatch (~12.85M parameters vs. 5,232 training images, ~2,456 params per image) rather than a hyperparameter tuning problem. Data augmentation was not tested but is judged unlikely to close a gap of this magnitude on its own."
+  },
+  "known_issues_encountered": [
+    "torch.load() defaults changed to weights_only=True in PyTorch 2.6+, requiring weights_only=False for full-model pickle loads of custom classes.",
+    "decode_image(mode=ImageReadMode.GRAY) only guaranteed for PNG/JPEG per PyTorch docs - verified dataset was pure JPEG before trusting this.",
+    "Source images had significant aspect ratio variance (0.835-3.379) - plain Resize((224,224)) causes real distortion for extreme-ratio images; not yet mitigated with pad-based resizing.",
+    "GPU underutilization (~1%) with CPU >100% traced to CPU-bound JPEG decode/resize in Dataset.__getitem__; addressed via num_workers in DataLoader.",
+    "argmax(1) is meaningless on a single-logit (batch,1) output - caused a silently-broken, constant 37.5% accuracy metric in early testing.",
+    "model.load_state_dict() returns an _IncompatibleKeys status object, not the model - assigning its return value as the model is a functional bug.",
+    "Checkpoint saving to disk does not update the in-memory model object - evaluation after training must explicitly reload the saved state_dict, or results will silently reflect the final (possibly overfit) epoch instead of the best one.",
+    "lr=1e-2 with Adam (10x its typical range) caused total model collapse via likely dead-ReLU units - loss went flat/non-decreasing and model predicted a single constant class for 100% of samples."
+  ],
+  "final_conclusion": "Across four configurations, the fully-connected architecture consistently overfits: test loss reaches its minimum within the first 2-4 epochs (best result: 84% accuracy / 0.1992 test loss / 0.83 macro F1 in run v4) and degrades for the remainder of training regardless of regularization or optimization strategy, while training loss continues toward near-zero in every run. This matches the initial capacity/data-size analysis (~12.85M parameters vs. 5,232 training images) and indicates the overfitting is structural - driven by parameter count and the architecture's lack of spatial inductive bias (Flatten discards all spatial structure before the first layer) - rather than a hyperparameter tuning problem. Further hyperparameter tuning is judged unlikely to resolve this. Next step: move to a CNN architecture, which is both more parameter-efficient (via convolutional weight sharing) and structurally appropriate for image data (preserves and exploits spatial relationships that Flatten-based FCLs discard).",
+  "recommended_cleanup_before_cnn_work": [
+    "Re-run v3 with reload-from-best-checkpoint fix for a fully apples-to-apples comparison across all four runs.",
+    "Decide explicitly whether false negatives (missed pneumonia) or false positives (false alarms) matter more for the intended use case, to guide pos_weight / threshold choices in future CNN experiments."
+  ]
+}
